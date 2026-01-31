@@ -244,7 +244,7 @@ app.post('/renameItem', async (req, res) => {
 });
 
 // Health Check
-app.get('/api/health', (req, res) => {
+app.get('/health', (req, res) => {
     res.json({ status: 'OK', message: 'JNIS Data Backend is running' });
 });
 
