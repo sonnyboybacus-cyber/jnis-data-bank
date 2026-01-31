@@ -42,29 +42,51 @@ async function getDriveClient() {
     return google.drive({ version: 'v3', auth: oauth2Client });
 }
 
-// Initialize User - Create Google Drive Folder
+// Initialize User - Create Google Drive Folder and Return User's Root Folder
 app.post('/initializeUser', async (req, res) => {
     try {
-        const userId = req.headers['authorization']?.split('Bearer ')[1];
-        if (!userId) {
-            return res.status(401).json({ error: 'User ID required' });
+        const authHeader = req.headers['authorization'];
+        if (!authHeader) {
+            return res.status(401).json({ error: 'Authorization required' });
         }
 
         const drive = await getDriveClient();
+        const token = authHeader.split('Bearer ')[1];
+        const folderName = `User_${token.substring(0, 10)}`;
 
-        // Create user folder
-        const folderMetadata = {
-            name: `User_${userId.substring(0, 8)}`,
-            mimeType: 'application/vnd.google-apps.folder',
-            parents: [MASTER_FOLDER_ID]
-        };
-
-        const folder = await drive.files.create({
-            resource: folderMetadata,
-            fields: 'id, name'
+        // Check if user folder already exists
+        const searchResponse = await drive.files.list({
+            q: `name='${folderName}' and '${MASTER_FOLDER_ID}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'`,
+            fields: 'files(id, name)',
+            pageSize: 1
         });
 
-        res.json({ folderId: folder.data.id, message: 'User initialized successfully' });
+        let userFolderId;
+
+        if (searchResponse.data.files && searchResponse.data.files.length > 0) {
+            // User folder exists
+            userFolderId = searchResponse.data.files[0].id;
+        } else {
+            // Create new user folder
+            const folderMetadata = {
+                name: folderName,
+                mimeType: 'application/vnd.google-apps.folder',
+                parents: [MASTER_FOLDER_ID]
+            };
+
+            const folder = await drive.files.create({
+                resource: folderMetadata,
+                fields: 'id, name'
+            });
+
+            userFolderId = folder.data.id;
+        }
+
+        res.json({
+            folderId: userFolderId,
+            rootFolderId: userFolderId,
+            message: 'User initialized successfully'
+        });
     } catch (error) {
         console.error('Initialize error:', error);
         res.status(500).json({ error: error.message });
@@ -123,11 +145,31 @@ app.post('/uploadFile', async (req, res) => {
     }
 });
 
-// List Files
+// List Files - User Isolated
 app.get('/listFiles', async (req, res) => {
     try {
+        const authHeader = req.headers['authorization'];
+        if (!authHeader) {
+            return res.status(401).json({ error: 'Authorization required' });
+        }
+
         const drive = await getDriveClient();
-        const folderId = req.query.folderId || MASTER_FOLDER_ID;
+        const token = authHeader.split('Bearer ')[1];
+        const folderName = `User_${token.substring(0, 10)}`;
+
+        // Get user's root folder
+        const searchResponse = await drive.files.list({
+            q: `name='${folderName}' and '${MASTER_FOLDER_ID}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'`,
+            fields: 'files(id, name)',
+            pageSize: 1
+        });
+
+        if (!searchResponse.data.files || searchResponse.data.files.length === 0) {
+            return res.json({ files: [], currentFolderId: null, rootFolderId: null });
+        }
+
+        const userRootFolderId = searchResponse.data.files[0].id;
+        const folderId = req.query.folderId || userRootFolderId;
         const view = req.query.view || 'my-files';
         const sortField = req.query.sortField || 'name';
         const sortOrder = req.query.sortOrder || 'asc';
@@ -135,9 +177,9 @@ app.get('/listFiles', async (req, res) => {
         let query = `'${folderId}' in parents and trashed=false`;
 
         if (view === 'trash') {
-            query = `trashed=true`;
+            query = `'${userRootFolderId}' in parents and trashed=true`;
         } else if (view === 'recent') {
-            query = `trashed=false`;
+            query = `'${userRootFolderId}' in parents and trashed=false`;
         }
 
         const orderByMap = {
@@ -156,7 +198,7 @@ app.get('/listFiles', async (req, res) => {
         res.json({
             files: response.data.files || [],
             currentFolderId: folderId,
-            rootFolderId: MASTER_FOLDER_ID
+            rootFolderId: userRootFolderId
         });
     } catch (error) {
         console.error('List files error:', error);
