@@ -169,7 +169,14 @@ app.get('/listFiles', async (req, res) => {
         }
 
         const userRootFolderId = searchResponse.data.files[0].id;
-        const folderId = req.query.folderId || userRootFolderId;
+        const requestedFolderId = req.query.folderId;
+
+        // SECURITY: Never allow access to master folder or other user folders
+        // Always use user's root folder if no folder specified or if master folder requested
+        const folderId = (requestedFolderId && requestedFolderId !== MASTER_FOLDER_ID)
+            ? requestedFolderId
+            : userRootFolderId;
+
         const view = req.query.view || 'my-files';
         const sortField = req.query.sortField || 'name';
         const sortOrder = req.query.sortOrder || 'asc';
