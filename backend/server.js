@@ -93,13 +93,39 @@ app.post('/initializeUser', async (req, res) => {
     }
 });
 
-// Upload File
+// Upload File - User Isolated
 app.post('/uploadFile', async (req, res) => {
     try {
-        const busboy = Busboy({ headers: req.headers });
+        const authHeader = req.headers['authorization'];
+        if (!authHeader) {
+            return res.status(401).json({ error: 'Authorization required' });
+        }
+
         const drive = await getDriveClient();
+        const token = authHeader.split('Bearer ')[1];
+        const userFolderName = `User_${token.substring(0, 10)}`;
+
+        // Get user's root folder
+        const searchResponse = await drive.files.list({
+            q: `name='${userFolderName}' and '${MASTER_FOLDER_ID}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'`,
+            fields: 'files(id, name)',
+            pageSize: 1
+        });
+
+        if (!searchResponse.data.files || searchResponse.data.files.length === 0) {
+            return res.status(400).json({ error: 'User folder not found. Please refresh the page.' });
+        }
+
+        const userRootFolderId = searchResponse.data.files[0].id;
+        const requestedFolderId = req.query.folderId;
+
+        // Use user's root folder if no folder specified or if master folder was passed
+        const targetFolderId = (requestedFolderId && requestedFolderId !== MASTER_FOLDER_ID)
+            ? requestedFolderId
+            : userRootFolderId;
+
+        const busboy = Busboy({ headers: req.headers });
         const uploadedFiles = [];
-        const folderId = req.query.folderId || MASTER_FOLDER_ID;
 
         busboy.on('file', async (fieldname, file, info) => {
             const { filename, mimeType } = info;
@@ -112,7 +138,7 @@ app.post('/uploadFile', async (req, res) => {
                 try {
                     const fileMetadata = {
                         name: filename,
-                        parents: [folderId]
+                        parents: [targetFolderId]
                     };
 
                     const media = {
@@ -213,16 +239,41 @@ app.get('/listFiles', async (req, res) => {
     }
 });
 
-// Create Folder
+// Create Folder - User Isolated
 app.post('/createFolder', async (req, res) => {
     try {
+        const authHeader = req.headers['authorization'];
+        if (!authHeader) {
+            return res.status(401).json({ error: 'Authorization required' });
+        }
+
         const { name, parentId } = req.body;
         const drive = await getDriveClient();
+        const token = authHeader.split('Bearer ')[1];
+        const folderName = `User_${token.substring(0, 10)}`;
+
+        // Get user's root folder
+        const searchResponse = await drive.files.list({
+            q: `name='${folderName}' and '${MASTER_FOLDER_ID}' in parents and trashed=false and mimeType='application/vnd.google-apps.folder'`,
+            fields: 'files(id, name)',
+            pageSize: 1
+        });
+
+        if (!searchResponse.data.files || searchResponse.data.files.length === 0) {
+            return res.status(400).json({ error: 'User folder not found. Please refresh the page.' });
+        }
+
+        const userRootFolderId = searchResponse.data.files[0].id;
+
+        // Use user's root folder if no parent specified or if master folder was passed
+        const actualParentId = (parentId && parentId !== MASTER_FOLDER_ID)
+            ? parentId
+            : userRootFolderId;
 
         const folderMetadata = {
             name: name,
             mimeType: 'application/vnd.google-apps.folder',
-            parents: [parentId || MASTER_FOLDER_ID]
+            parents: [actualParentId]
         };
 
         const folder = await drive.files.create({
