@@ -43,9 +43,9 @@ async function getDriveClient() {
 }
 
 // Initialize User - Create Google Drive Folder
-app.post('/api/initialize', async (req, res) => {
+app.post('/initializeUser', async (req, res) => {
     try {
-        const userId = req.headers['x-user-id'];
+        const userId = req.headers['authorization']?.split('Bearer ')[1];
         if (!userId) {
             return res.status(401).json({ error: 'User ID required' });
         }
@@ -54,7 +54,7 @@ app.post('/api/initialize', async (req, res) => {
 
         // Create user folder
         const folderMetadata = {
-            name: `User_${userId}`,
+            name: `User_${userId.substring(0, 8)}`,
             mimeType: 'application/vnd.google-apps.folder',
             parents: [MASTER_FOLDER_ID]
         };
@@ -72,19 +72,15 @@ app.post('/api/initialize', async (req, res) => {
 });
 
 // Upload File
-app.post('/api/upload', async (req, res) => {
+app.post('/uploadFile', async (req, res) => {
     try {
-        const userId = req.headers['x-user-id'];
-        if (!userId) {
-            return res.status(401).json({ error: 'User ID required' });
-        }
-
         const busboy = Busboy({ headers: req.headers });
         const drive = await getDriveClient();
         const uploadedFiles = [];
+        const folderId = req.query.folderId || MASTER_FOLDER_ID;
 
         busboy.on('file', async (fieldname, file, info) => {
-            const { filename, encoding, mimeType } = info;
+            const { filename, mimeType } = info;
             const tmpFilePath = path.join(os.tmpdir(), filename);
             const writeStream = fs.createWriteStream(tmpFilePath);
 
@@ -92,8 +88,6 @@ app.post('/api/upload', async (req, res) => {
 
             writeStream.on('finish', async () => {
                 try {
-                    const folderId = req.headers['x-folder-id'] || MASTER_FOLDER_ID;
-
                     const fileMetadata = {
                         name: filename,
                         parents: [folderId]
@@ -107,7 +101,7 @@ app.post('/api/upload', async (req, res) => {
                     const response = await drive.files.create({
                         resource: fileMetadata,
                         media: media,
-                        fields: 'id, name, mimeType, webViewLink'
+                        fields: 'id, name, mimeType, webViewLink, createdTime, size'
                     });
 
                     uploadedFiles.push(response.data);
@@ -130,18 +124,13 @@ app.post('/api/upload', async (req, res) => {
 });
 
 // List Files
-app.get('/api/files', async (req, res) => {
+app.get('/listFiles', async (req, res) => {
     try {
-        const userId = req.headers['x-user-id'];
-        if (!userId) {
-            return res.status(401).json({ error: 'User ID required' });
-        }
-
         const drive = await getDriveClient();
         const folderId = req.query.folderId || MASTER_FOLDER_ID;
         const view = req.query.view || 'my-files';
-        const sortBy = req.query.sortBy || 'name';
-        const order = req.query.order || 'asc';
+        const sortField = req.query.sortField || 'name';
+        const sortOrder = req.query.sortOrder || 'asc';
 
         let query = `'${folderId}' in parents and trashed=false`;
 
@@ -160,11 +149,15 @@ app.get('/api/files', async (req, res) => {
         const response = await drive.files.list({
             q: query,
             fields: 'files(id, name, mimeType, webViewLink, thumbnailLink, size, createdTime, trashed)',
-            orderBy: `${orderByMap[sortBy]} ${order}`,
+            orderBy: `${orderByMap[sortField] || 'name'} ${sortOrder}`,
             pageSize: 100
         });
 
-        res.json({ files: response.data.files || [] });
+        res.json({
+            files: response.data.files || [],
+            currentFolderId: folderId,
+            rootFolderId: MASTER_FOLDER_ID
+        });
     } catch (error) {
         console.error('List files error:', error);
         res.status(500).json({ error: error.message });
@@ -172,13 +165,8 @@ app.get('/api/files', async (req, res) => {
 });
 
 // Create Folder
-app.post('/api/create-folder', async (req, res) => {
+app.post('/createFolder', async (req, res) => {
     try {
-        const userId = req.headers['x-user-id'];
-        if (!userId) {
-            return res.status(401).json({ error: 'User ID required' });
-        }
-
         const { name, parentId } = req.body;
         const drive = await getDriveClient();
 
@@ -190,7 +178,7 @@ app.post('/api/create-folder', async (req, res) => {
 
         const folder = await drive.files.create({
             resource: folderMetadata,
-            fields: 'id, name, mimeType'
+            fields: 'id, name, mimeType, createdTime'
         });
 
         res.json(folder.data);
@@ -200,62 +188,51 @@ app.post('/api/create-folder', async (req, res) => {
     }
 });
 
-// Delete File (Move to Trash)
-app.delete('/api/files/:fileId', async (req, res) => {
+// Delete Item (Move to Trash)
+app.delete('/deleteItem', async (req, res) => {
     try {
-        const userId = req.headers['x-user-id'];
-        if (!userId) {
-            return res.status(401).json({ error: 'User ID required' });
-        }
-
+        const fileId = req.query.fileId;
         const drive = await getDriveClient();
+
         await drive.files.update({
-            fileId: req.params.fileId,
+            fileId: fileId,
             resource: { trashed: true }
         });
 
-        res.json({ message: 'File moved to trash' });
+        res.json({ message: 'Item moved to trash' });
     } catch (error) {
         console.error('Delete error:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// Restore File
-app.post('/api/files/:fileId/restore', async (req, res) => {
+// Restore Item
+app.post('/restoreItem', async (req, res) => {
     try {
-        const userId = req.headers['x-user-id'];
-        if (!userId) {
-            return res.status(401).json({ error: 'User ID required' });
-        }
-
+        const fileId = req.query.fileId;
         const drive = await getDriveClient();
+
         await drive.files.update({
-            fileId: req.params.fileId,
+            fileId: fileId,
             resource: { trashed: false }
         });
 
-        res.json({ message: 'File restored' });
+        res.json({ message: 'Item restored' });
     } catch (error) {
         console.error('Restore error:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// Rename File
-app.patch('/api/files/:fileId', async (req, res) => {
+// Rename Item
+app.post('/renameItem', async (req, res) => {
     try {
-        const userId = req.headers['x-user-id'];
-        if (!userId) {
-            return res.status(401).json({ error: 'User ID required' });
-        }
-
-        const { name } = req.body;
+        const { fileId, newName } = req.body;
         const drive = await getDriveClient();
 
         const response = await drive.files.update({
-            fileId: req.params.fileId,
-            resource: { name },
+            fileId: fileId,
+            resource: { name: newName },
             fields: 'id, name'
         });
 
